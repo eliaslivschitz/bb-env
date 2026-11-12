@@ -39,15 +39,28 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor("#0B0E14"))
         }
         val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+            orientation = LinearLayout.VERTICAL
             setPadding(16, 8, 16, 8)
         }
         status = TextView(this).apply { setTextColor(Color.WHITE); textSize = 13f }
-        bar.addView(status, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        bar.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         val toggleLog = Button(this).apply { text = "Log"; setOnClickListener { showLog = !showLog; refresh() } }
+        val copy = Button(this).apply {
+            text = "Copy log"
+            setOnClickListener {
+                val clip = getSystemService(android.content.ClipboardManager::class.java)
+                clip.setPrimaryClip(android.content.ClipData.newPlainText("BB Host log", BbRunner.logForCopy()))
+                android.widget.Toast.makeText(this@MainActivity, "Log copied", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
         val restart = Button(this).apply { text = "Restart"; setOnClickListener { restartBb() } }
         stop = Button(this).apply { text = "Stop"; setOnClickListener { stopOrStart() } }
-        listOf(toggleLog, restart, stop).forEach { bar.addView(it) }
+        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf(toggleLog, copy, restart, stop).forEach { b ->
+            b.textSize = 12f
+            buttons.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        bar.addView(buttons)
         root.addView(bar)
 
         val body = FrameLayout(this)

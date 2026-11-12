@@ -69,36 +69,66 @@ class LinuxEnv(private val context: Context) {
         log("Linux environment: ready")
     }
 
-    /** Git, certificates, Python and GCC 10 (node-gyp needs them to build node-pty). */
+    /**
+     * Git, Python and compilers. The Core bundle has Git and Node but no Python or compiler.
+     * gcc-10/g++-10 alone install only /usr/bin/gcc-10 and g++-10 (checked against the focal arm64 Contents index),
+     * so build-essential supplies gcc, g++, make and libc6-dev, and cc/c++/gcc/g++ are then pointed at version 10
+     * because node-gyp and make look for those names.
+     */
     fun ensureTools(log: (String) -> Unit, cancelled: () -> Boolean) {
-        if (toolsMarker.readTextOrNull() == TOOLS_VERSION && File(rootfs, "usr/bin/git").exists()) return
-        log("Installing Git and build tools with apt (first run only)")
-        val packages = "git ca-certificates python3 make gcc-10 g++-10"
+        if (toolsMarker.readTextOrNull() == TOOLS_VERSION && File(rootfs, "usr/bin/g++-10").exists()) return
+        log("Installing Python and build tools with apt (first run only)")
+        val packages = "git ca-certificates python3 python3-distutils build-essential gcc-10 g++-10"
         val exit = runGuest(
             "export DEBIAN_FRONTEND=noninteractive; dpkg --configure -a; " +
                 "apt-get -o DPkg::Lock::Timeout=120 update && " +
                 "apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends $packages && " +
+                "ln -sf gcc-10 /usr/bin/gcc && ln -sf g++-10 /usr/bin/g++ && " +
+                "ln -sf gcc-10 /usr/bin/cc && ln -sf g++-10 /usr/bin/c++ && " +
                 "apt-get clean && rm -rf /var/lib/apt/lists/*",
             30 * 60_000L, log, cancelled,
         )
         check(exit == 0) { "apt could not install $packages (exit $exit)" }
-        check(runGuest("git --version && gcc-10 --version | head -1 && python3 --version", 60_000L, log, cancelled) == 0) {
-            "Git or the compiler did not start in the Linux environment"
-        }
+        check(
+            runGuest(
+                "git --version && python3 --version && make --version | head -1 && " +
+                    "for c in cc c++ gcc g++ gcc-10 g++-10; do \$c --version | head -1; done && " +
+                    "echo 'int main(){return 0;}' > /tmp/t.c && cc /tmp/t.c -o /tmp/t && /tmp/t && " +
+                    "printf '#include <string>\nint main(){std::string s;return (int)s.size();}\n' > /tmp/t.cc && c++ -std=c++20 /tmp/t.cc -o /tmp/t2 && /tmp/t2",
+                120_000L, log, cancelled,
+            ) == 0,
+        ) { "Git or the compiler did not work in the Linux environment" }
         toolsMarker.writeText(TOOLS_VERSION)
     }
 
-    /** Installs bb-app into /root/.bb-npm inside the environment. Needs the network. */
+    /**
+     * Installs bb-app into /root/.bb-npm inside the environment. Needs the network.
+     * node-pty, fs-native-extensions and @parcel/watcher ship linux-arm64 prebuilds that fit glibc 2.31.
+     * better-sqlite3's prebuild needs glibc 2.34 and GLIBCXX 3.4.29, which Ubuntu 20.04 lacks, so it is compiled here.
+     */
     fun ensureBb(log: (String) -> Unit, cancelled: () -> Boolean) {
         if (isBbInstalled()) return
-        log("Installing bb-app from npm (first run only; compiles native add-ons, can take 10 minutes or more)")
-        val exit = runGuest(
-            "export npm_config_prefix=/root/.bb-npm npm_config_nodedir=/usr/local/lib/nodejs; node --version; npm --version; " +
+        log("Installing bb-app from npm (first run only; compiles SQLite, can take 10 minutes or more)")
+        val env = "export npm_config_prefix=/root/.bb-npm npm_config_nodedir=/usr/local/lib/nodejs CC=gcc-10 CXX=g++-10; "
+        var exit = runGuest(
+            env + "node --version; npm --version; " +
                 "npm install -g bb-app@latest --allow-scripts=better-sqlite3,node-pty,@parcel/watcher",
             60 * 60_000L, log, cancelled,
         )
         check(exit == 0) { "npm could not install bb-app (exit $exit). See the log above." }
-        check(runGuest("/root/.bb-npm/bin/bb-app --help 2>&1 | head -5; test -x /root/.bb-npm/bin/bb-app", 120_000L, log, cancelled) == 0) {
+        exit = runGuest(
+            env + "found=0; for d in \$(find /root/.bb-npm/lib/node_modules -type d -path '*/node_modules/better-sqlite3'); do " +
+                "found=1; " +
+                "if (cd \$d && node -e \"new (require('.'))(':memory:').close()\"); then echo \"better-sqlite3 loads: \$d\"; continue; fi; " +
+                "echo \"better-sqlite3 prebuilt binary does not load here; compiling from source: \$d\"; " +
+                "rm -f \$d/prebuilds/linux-arm64.node; " +
+                "(cd \$d && node /usr/local/lib/nodejs/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --release --force_build=1) || exit 1; " +
+                "(cd \$d && node -e \"new (require('.'))(':memory:').close()\") || exit 1; " +
+                "done; test \$found = 1",
+            90 * 60_000L, log, cancelled,
+        )
+        check(exit == 0) { "better-sqlite3 could not be made to work (exit $exit). See the log above." }
+        check(runGuest("test -x /root/.bb-npm/bin/bb-app && /root/.bb-npm/bin/bb-app --help 2>&1 | head -5", 120_000L, log, cancelled) == 0) {
             "bb-app was installed but does not start"
         }
         bbMarker.writeText(BB_START)
@@ -369,8 +399,8 @@ class LinuxEnv(private val context: Context) {
         const val BB_URL = "http://127.0.0.1:38886"
         private const val BB_DATA_DIR = "/root/.bb"
         private const val BB_START = "/root/.bb-npm/bin/bb-app --data-dir $BB_DATA_DIR --server-bind-host 127.0.0.1 --no-in-app-updates"
-        private const val BB_START_COMMAND = "exec $BB_START"
-        private const val TOOLS_VERSION = "git-python-gcc10-v1"
+        private const val BB_START_COMMAND = "export PATH=/root/.bb-npm/bin:\$PATH; exec $BB_START"
+        private const val TOOLS_VERSION = "git-python-gcc10-v2"
         private const val ROOTFS_VERSION = "ubuntu-20.04.5-arm64"
         // The same pinned, checksummed Core bundle the original app downloads (Ubuntu 20.04 arm64 + Node.js 24).
         private const val RUNTIME_BASE_URL = "https://github.com/techjarves/Mobile-Harness/releases/download/runtime-2026.09.4"

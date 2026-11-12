@@ -36,8 +36,8 @@ android {
         minSdk = 28
         // Target 28 keeps the PRoot execution path the original app proved.
         targetSdk = 28
-        versionCode = 1
-        versionName = "1.0.10-bbhost.1"
+        versionCode = 2
+        versionName = "1.0.10-bbhost.2"
         ndk.abiFilters += "arm64-v8a"
     }
 
@@ -53,7 +53,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions.jvmTarget = "17"
-    buildFeatures.buildConfig = false
+    buildFeatures.buildConfig = true
     lint.checkReleaseBuilds = false
     externalNativeBuild {
         cmake {

@@ -23,6 +23,14 @@ object BbRunner {
     @Volatile private var bbProcess: Process? = null
     private var env: LinuxEnv? = null
 
+    /** The log for copying: all of it up to [maxChars], otherwise the newest part (the clipboard has a size limit). */
+    fun logForCopy(maxChars: Int = 400_000): String {
+        val f = logFile ?: return ""
+        val text = runCatching { f.readText() }.getOrDefault("")
+        return if (text.length <= maxChars) text
+        else "[log cut to the last $maxChars characters; the full file is ${f.absolutePath}]\n" + text.takeLast(maxChars)
+    }
+
     fun logTail(maxBytes: Int = 24_000): String {
         val f = logFile ?: return ""
         return runCatching {
@@ -46,7 +54,11 @@ object BbRunner {
             if (worker?.isAlive == true) return
             val app = context.applicationContext
             env = LinuxEnv(app)
-            logFile = File(app.filesDir, "bbhost.log").also { if (it.length() > 1_000_000) it.delete() }
+            logFile = File(app.filesDir, "bbhost.log").also {
+                // Keep the whole history across restarts; roll over to one backup file at 20 MB.
+                if (it.length() > 20_000_000) it.renameTo(File(app.filesDir, "bbhost.log.1"))
+            }
+            log("---- session start ${java.util.Date()} | BB Host ${BuildConfig.VERSION_NAME} | Android ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT}) | ${android.os.Build.MODEL} | ABIs ${android.os.Build.SUPPORTED_ABIS.joinToString()}")
             stopRequested = false
             state = State.SETUP
             worker = Thread({ runAll() }, "bbhost-runner").also { it.start() }
