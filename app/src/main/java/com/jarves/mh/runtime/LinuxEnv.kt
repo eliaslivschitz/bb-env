@@ -27,6 +27,7 @@ class LinuxEnv(private val context: Context) {
     private val rootfsMarker = File(rootfs, ".pocket-rootfs-version")
     private val toolsMarker = File(rootfs, ".bbhost-tools-version")
     private val bbMarker = File(rootfs, ".bbhost-bb-installed")
+    private val agentsMarker = File(rootfs, ".bbhost-agents-version")
 
     fun isBaseReady(): Boolean =
         ensureRootfsCompatibilityLinks() &&
@@ -132,6 +133,31 @@ class LinuxEnv(private val context: Context) {
             "bb-app was installed but does not start"
         }
         bbMarker.writeText(BB_START)
+    }
+
+    /**
+     * Claude Code and Codex, so bb has a provider out of the box (bb does not install them itself).
+     * Not fatal: bb starts without them and says the CLI is missing; the next start retries.
+     * If Claude Code's glibc build does not run on Ubuntu 20.04's glibc 2.31, its musl build (what Apex runs) is used instead.
+     */
+    fun ensureAgents(log: (String) -> Unit, cancelled: () -> Boolean) {
+        if (agentsMarker.readTextOrNull() == AGENTS_VERSION) return
+        log("Installing Claude Code and Codex from npm (first run only)")
+        val musl = "/root/.bb-npm/lib/node_modules/@anthropic-ai/claude-code-linux-arm64-musl/claude"
+        val exit = runGuest(
+            "export npm_config_prefix=/root/.bb-npm DEBIAN_FRONTEND=noninteractive; " +
+                "npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest || exit 1; " +
+                "if ! claude --version; then " +
+                "echo 'Claude Code glibc build does not run here; switching to its musl build'; " +
+                "apt-get -o DPkg::Lock::Timeout=120 update && apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends musl && " +
+                "npm install -g --force @anthropic-ai/claude-code-linux-arm64-musl@latest && chmod +x $musl && " +
+                "ln -sf $musl /root/.bb-npm/bin/claude && claude --version || exit 2; " +
+                "apt-get clean; rm -rf /var/lib/apt/lists/*; fi; " +
+                "codex --version",
+            30 * 60_000L, log, cancelled,
+        )
+        if (exit == 0) agentsMarker.writeText(AGENTS_VERSION)
+        else log("Claude Code or Codex did not install (exit $exit). bb still starts; Restart tries again.")
     }
 
     /** Starts bb-app (server and host daemon) bound to loopback; the process runs until bb exits. */
@@ -401,6 +427,7 @@ class LinuxEnv(private val context: Context) {
         private const val BB_START = "/root/.bb-npm/bin/bb-app --data-dir $BB_DATA_DIR --server-bind-host 127.0.0.1 --no-in-app-updates"
         private const val BB_START_COMMAND = "export PATH=/root/.bb-npm/bin:\$PATH; exec $BB_START"
         private const val TOOLS_VERSION = "git-python-gcc10-v2"
+        private const val AGENTS_VERSION = "claude-codex-v1"
         private const val ROOTFS_VERSION = "ubuntu-20.04.5-arm64"
         // The same pinned, checksummed Core bundle the original app downloads (Ubuntu 20.04 arm64 + Node.js 24).
         private const val RUNTIME_BASE_URL = "https://github.com/techjarves/Mobile-Harness/releases/download/runtime-2026.09.4"

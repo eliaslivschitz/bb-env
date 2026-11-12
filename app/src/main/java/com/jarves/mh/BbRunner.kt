@@ -91,6 +91,7 @@ object BbRunner {
             e.ensureBase(::log)
             e.ensureTools(::log, cancelled)
             e.ensureBb(::log, cancelled)
+            e.ensureAgents(::log, cancelled)
             if (stopRequested) return
             set(State.STARTING, "Starting bb")
             val process = e.startBb()

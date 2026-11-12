@@ -84,6 +84,12 @@ class MainActivity : Activity() {
         setContentView(root)
 
         startForegroundService(Intent(this, BbService::class.java))
+        // Samsung and others kill battery-optimized background apps, which stops bb.
+        if (!getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) {
+            runCatching {
+                startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:$packageName")))
+            }
+        }
     }
 
     override fun onResume() {
