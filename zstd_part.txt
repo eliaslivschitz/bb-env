@@ -1,0 +1,43 @@
+    private fun extractZstdTar(archive: File, destination: File) {
+        val deferredLinks = mutableListOf<Pair<File, File>>()
+        TarArchiveInputStream(
+            ZstdCompressorInputStream(BufferedInputStream(archive.inputStream())),
+        ).use { tar ->
+            var entry: TarArchiveEntry? = tar.nextEntry
+            while (entry != null) {
+                val cleanName = entry.name.removePrefix("./")
+                if (cleanName.isNotBlank()) {
+                    val target = safeChild(destination, cleanName)
+                    when {
+                        entry.isDirectory -> target.mkdirs()
+                        entry.isSymbolicLink -> {
+                            target.parentFile?.mkdirs()
+                            if (target.exists() || java.nio.file.Files.isSymbolicLink(target.toPath())) target.delete()
+                            Os.symlink(entry.linkName, target.absolutePath)
+                        }
+                        entry.isLink -> {
+                            target.parentFile?.mkdirs()
+                            val linkTarget = safeChild(destination, entry.linkName.removePrefix("./"))
+                            if (linkTarget.exists()) {
+                                linkTarget.inputStream().use { input -> FileOutputStream(target).use { input.copyTo(it) } }
+                            } else {
+                                deferredLinks += target to linkTarget
+                            }
+                        }
+                        entry.isFile -> {
+                            target.parentFile?.mkdirs()
+                            FileOutputStream(target).use { output -> tar.copyTo(output) }
+                            runCatching { Os.chmod(target.absolutePath, entry.mode and 0b111111111) }
+                        }
+                    }
+                }
+                entry = tar.nextEntry
+            }
+        }
+        deferredLinks.forEach { (target, linkTarget) ->
+            require(linkTarget.isFile) { "Archive hard-link target is missing" }
+            target.parentFile?.mkdirs()
+            linkTarget.inputStream().use { input -> FileOutputStream(target).use { input.copyTo(it) } }
+            runCatching { Os.chmod(target.absolutePath, android.system.Os.stat(linkTarget.absolutePath).st_mode) }
+        }
+    }

@@ -1,0 +1,48 @@
+    private suspend fun downloadVerified(
+        url: String,
+        destination: File,
+        expectedChecksum: String,
+        algorithm: String = "SHA-256",
+        onBytes: suspend (downloaded: Long, total: Long) -> Unit,
+    ) {
+        destination.parentFile?.mkdirs()
+        if (destination.isFile && digest(destination, algorithm).equals(expectedChecksum, ignoreCase = true)) {
+            onBytes(destination.length(), destination.length())
+            return
+        }
+        val temporary = File(destination.parentFile, "${destination.name}.part")
+        var existing = temporary.takeIf(File::isFile)?.length() ?: 0L
+        val connection = URL(url).openConnection() as HttpURLConnection
+        connection.connectTimeout = 20_000
+        connection.readTimeout = 120_000
+        connection.instanceFollowRedirects = true
+        if (existing > 0L) connection.setRequestProperty("Range", "bytes=$existing-")
+        check(connection.responseCode in 200..299) { str(R.string.rt_install_download_failed_http, connection.responseCode) }
+        val resumed = connection.responseCode == HttpURLConnection.HTTP_PARTIAL && existing > 0L
+        if (!resumed) {
+            temporary.delete()
+            existing = 0L
+        }
+        val total = connection.contentLengthLong.takeIf { it >= 0L }?.plus(existing) ?: -1L
+        connection.inputStream.use { input ->
+            FileOutputStream(temporary, resumed).use { output ->
+                val buffer = ByteArray(128 * 1024)
+                var downloaded = existing
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    downloaded += count
+                    onBytes(downloaded, total)
+                }
+            }
+        }
+        connection.disconnect()
+        val actual = digest(temporary, algorithm)
+        if (!actual.equals(expectedChecksum, ignoreCase = true)) {
+            temporary.delete()
+            error("Downloaded file checksum did not match")
+        }
+        destination.delete()
+        check(temporary.renameTo(destination)) { "Could not finish download" }
+    }

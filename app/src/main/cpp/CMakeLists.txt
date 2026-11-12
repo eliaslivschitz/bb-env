@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22.1)
+﻿cmake_minimum_required(VERSION 3.22.1)
 project(mobile_harness_native C ASM)
 
 if(NOT ANDROID_ABI STREQUAL "arm64-v8a")
@@ -25,7 +25,7 @@ set_target_properties(talloc PROPERTIES OUTPUT_NAME talloc SOVERSION 2)
 
 add_library(android-shmem SHARED "${SHM_ROOT}/shmem.c")
 target_include_directories(android-shmem PUBLIC "${SHM_ROOT}")
-target_compile_definitions(android-shmem PRIVATE _PATH_TMP="/data/data/com.jarves.mh/cache/")
+target_compile_definitions(android-shmem PRIVATE _PATH_TMP="/data/data/com.jarves.mh.bbhost/cache/")
 target_link_libraries(android-shmem PRIVATE log android)
 
 set(PROOT_SOURCES
@@ -108,7 +108,7 @@ target_compile_definitions(proot PRIVATE
 target_compile_options(proot PRIVATE
     -Wall -Wextra -O2
     "SHELL:-include string.h"
-    "SHELL:-include ${SHM_ROOT}/shm.h"
+    "SHELL:-include shm.h"
 )
 target_link_options(proot PRIVATE "-Wl,-z,noexecstack")
 target_link_libraries(proot PRIVATE talloc android-shmem)

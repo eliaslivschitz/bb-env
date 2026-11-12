@@ -64,3 +64,9 @@ dist/runtime-bundles/sources/
 
 # Generated local in-app update test artifacts.
 dist/update-test/
+
+# BB Host
+.toolchain/
+signing/
+dist/*.apk
+local.properties

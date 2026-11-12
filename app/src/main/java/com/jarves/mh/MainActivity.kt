@@ -1,75 +1,144 @@
 package com.jarves.mh
 
-import android.content.Context
+import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.Typeface
 import android.os.Bundle
-import android.content.ComponentCallbacks2
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.LocalActivityResultRegistryOwner
-import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLayoutDirection
-import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.unit.LayoutDirection.Ltr
-import androidx.compose.ui.unit.LayoutDirection.Rtl
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.jarves.mh.ui.AppStrings
-import com.jarves.mh.ui.LocaleHelper
-import com.jarves.mh.ui.MainViewModel
-import com.jarves.mh.ui.PocketDevApp
-import com.jarves.mh.ui.theme.PocketTheme
+import android.os.Handler
+import android.os.Looper
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import com.jarves.mh.runtime.LinuxEnv
 
-class MainActivity : ComponentActivity() {
-    private var appliedLanguageCode: String? = null
+/** One screen: progress and live log until bb answers /health, then bb's own web UI full screen. */
+class MainActivity : Activity() {
+    private val ui = Handler(Looper.getMainLooper())
+    private lateinit var status: TextView
+    private lateinit var logView: TextView
+    private lateinit var logScroll: ScrollView
+    private lateinit var web: WebView
+    private lateinit var stop: Button
+    private var showLog = true
+    private var webLoaded = false
 
-    // Apply the in-app language to the Activity itself, not only to the Compose tree:
-    // dialogs, dropdown menus and popups get their own window whose context is the Activity.
-    override fun attachBaseContext(newBase: Context) {
-        appliedLanguageCode = AppStrings.languageCode(newBase)
-        super.attachBaseContext(AppStrings.context(newBase))
-    }
-    private val mainViewModel: MainViewModel by viewModels()
-
+    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        setContent {
-            val vm = mainViewModel
-            val state by vm.state.collectAsStateWithLifecycle()
-            LaunchedEffect(state.languageCode) {
-                if (state.languageCode != appliedLanguageCode) recreate()
-            }
-            val context = LocalContext.current
-            val localizedContext = remember(state.languageCode, context) {
-                LocaleHelper.applyLanguage(context, state.languageCode)
-            }
-            val localizedConfiguration = localizedContext.resources.configuration
-            val layoutDirection: LayoutDirection =
-                if (localizedConfiguration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL) Rtl else Ltr
-            CompositionLocalProvider(
-                LocalContext provides localizedContext,
-                LocalConfiguration provides localizedConfiguration,
-                LocalLayoutDirection provides layoutDirection,
-                LocalActivityResultRegistryOwner provides this,
-            ) {
-                PocketTheme(themeMode = state.themeMode) {
-                    PocketDevApp(vm)
-                }
-            }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#0B0E14"))
+        }
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(16, 8, 16, 8)
+        }
+        status = TextView(this).apply { setTextColor(Color.WHITE); textSize = 13f }
+        bar.addView(status, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val toggleLog = Button(this).apply { text = "Log"; setOnClickListener { showLog = !showLog; refresh() } }
+        val restart = Button(this).apply { text = "Restart"; setOnClickListener { restartBb() } }
+        stop = Button(this).apply { text = "Stop"; setOnClickListener { stopOrStart() } }
+        listOf(toggleLog, restart, stop).forEach { bar.addView(it) }
+        root.addView(bar)
+
+        val body = FrameLayout(this)
+        logView = TextView(this).apply {
+            setTextColor(Color.parseColor("#C9D1D9"))
+            typeface = Typeface.MONOSPACE
+            textSize = 11f
+            setPadding(16, 8, 16, 8)
+            setTextIsSelectable(true)
+        }
+        logScroll = ScrollView(this).apply { addView(logView) }
+        web = WebView(this).apply {
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            webViewClient = WebViewClient()
+            webChromeClient = WebChromeClient()
+        }
+        body.addView(logScroll, FrameLayout.LayoutParams(-1, -1))
+        body.addView(web, FrameLayout.LayoutParams(-1, -1))
+        root.addView(body, LinearLayout.LayoutParams(-1, 0, 1f))
+        setContentView(root)
+
+        startForegroundService(Intent(this, BbService::class.java))
+    }
+
+    override fun onResume() {
+        super.onResume()
+        ui.post(tick)
+    }
+
+    override fun onPause() {
+        ui.removeCallbacks(tick)
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        web.destroy()
+        super.onDestroy()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (!showLog && web.canGoBack()) web.goBack() else super.onBackPressed()
+    }
+
+    private val tick = object : Runnable {
+        override fun run() {
+            refresh()
+            ui.postDelayed(this, 1_000)
         }
     }
 
-    @Suppress("DEPRECATION")
-    override fun onTrimMemory(level: Int) {
-        super.onTrimMemory(level)
-        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
-            mainViewModel.releaseMemoryCaches()
+    private fun refresh() {
+        val state = BbRunner.state
+        status.text = "BB Host: ${BbRunner.detail}"
+        val running = state == BbRunner.State.RUNNING
+        if (running && !webLoaded) {
+            webLoaded = true
+            showLog = false
+            web.loadUrl(LinuxEnv.BB_URL)
         }
+        if (!running) webLoaded = false
+        val wantLog = showLog || !running
+        web.visibility = if (wantLog) View.GONE else View.VISIBLE
+        logScroll.visibility = if (wantLog) View.VISIBLE else View.GONE
+        if (wantLog) {
+            val text = BbRunner.logTail()
+            if (text != logView.text.toString()) {
+                logView.text = text
+                logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+            }
+        }
+        val active = state == BbRunner.State.SETUP || state == BbRunner.State.STARTING || running
+        stop.text = if (active) "Stop" else "Start"
+    }
+
+    private fun stopOrStart() {
+        val s = BbRunner.state
+        if (s == BbRunner.State.SETUP || s == BbRunner.State.STARTING || s == BbRunner.State.RUNNING) {
+            startService(Intent(this, BbService::class.java).setAction(BbService.ACTION_STOP))
+        } else {
+            startForegroundService(Intent(this, BbService::class.java))
+        }
+        showLog = true
+    }
+
+    private fun restartBb() {
+        showLog = true
+        Thread {
+            BbRunner.stop()
+            runOnUiThread { startForegroundService(Intent(this, BbService::class.java)) }
+        }.start()
     }
 }

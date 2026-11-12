@@ -1,0 +1,8 @@
+    private fun safeChild(root: File, relative: String): File {
+        require(relative.isNotBlank() && !relative.startsWith('/')) { "Unsafe archive path" }
+        val file = File(root, relative)
+        val rootPath = root.canonicalFile.toPath()
+        val parentPath = (file.parentFile ?: root).canonicalFile.toPath()
+        require(parentPath.startsWith(rootPath)) { "Archive path escapes runtime" }
+        return file
+    }
